@@ -17,8 +17,8 @@ external_components:
       path: external_components_local
 
 wifi:
-  ssid: "Jerry-IoT"
-  password: "992008871"
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
 
 logger:
 web_server:
