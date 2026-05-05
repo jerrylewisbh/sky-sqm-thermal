@@ -4,7 +4,7 @@ An advanced all-in-one meteorological station for ESP32, featuring a 32x24 MLX90
 
 This project was specifically designed to complement All-Sky camera systems, providing both visual thermal data of the sky and precise local weather metrics.
 
-## 🌟 Features
+##  Features
 
 - **Live Thermal Imaging:** Real-time 32x24 heatmap with auto-scaling and "Ironbow" color palette.
 - **Environmental Sensing:** High-precision Temperature, Humidity, Barometric Pressure, and Light Intensity (Lux).
@@ -15,7 +15,7 @@ This project was specifically designed to complement All-Sky camera systems, pro
   - `http://<IP>/thermal.bmp`: Instant uncompressed bitmap image of the thermal feed.
 - **Home Assistant Native:** Full "Set and Forget" integration via the ESPHome Native API.
 
-## 🛠 Hardware Required
+## Hardware Required
 
 - **Microcontroller:** ESP32 (DevKit V1 or similar).
 - **Thermal Camera:** MLX90640 (110° or 55° version).
@@ -24,7 +24,7 @@ This project was specifically designed to complement All-Sky camera systems, pro
 - **Anemometer:** Passive 3-cup reed switch type.
 - **Rain Sensor:** 12V contact sensor (requires a 12V relay for isolation).
 
-## 🔌 Wiring Diagram
+## Wiring Diagram
 
 | Component | Pin | ESP32 GPIO |
 | :--- | :--- | :--- |
@@ -35,7 +35,7 @@ This project was specifically designed to complement All-Sky camera systems, pro
 
 *Note: All I2C sensors should be powered by the 3.3V rail. The Relay should be used to isolate the 12V rain sensor signal from the ESP32 pins.*
 
-## 🚀 Installation
+##  Installation
 
 1. Install [ESPHome](https://esphome.io/).
 2. Clone this repository.
@@ -49,7 +49,7 @@ This project was specifically designed to complement All-Sky camera systems, pro
    esphome run sensortest.yaml
    ```
 
-## 📊 API Usage
+## API Usage
 
 ### JSON Endpoint
 Get all current readings immediately:
