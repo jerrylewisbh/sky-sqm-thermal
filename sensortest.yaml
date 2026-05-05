@@ -1,0 +1,89 @@
+esphome:
+  name: sky-thermal-cam
+  platformio_options:
+    lib_ldf_mode: deep+
+    board_build.f_cpu: 240000000L
+    board_build.flash_mode: dout
+    upload_speed: 115200
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+external_components:
+  - source:
+      type: local
+      path: external_components_local
+
+wifi:
+  ssid: "Jerry-IoT"
+  password: "992008871"
+
+logger:
+web_server:
+  port: 80
+
+api:
+ota:
+  - platform: esphome
+
+sky_thermal:
+  id: my_sky_thermal
+  update_interval: 5s
+
+text_sensor:
+  - platform: sky_thermal
+    sky_thermal_id: my_sky_thermal
+    name: "Sky Thermal Raw Data"
+
+sensor:
+  - platform: sky_thermal
+    sky_thermal_id: my_sky_thermal
+    mean_temp:
+      name: "Sky Average Temp"
+    min_temp:
+      name: "Sky Min Temp"
+    max_temp:
+      name: "Sky Max Temp"
+    center_temp:
+      name: "Sky Center Temp"
+    bme_temp:
+      name: "Ambient Temperature"
+    bme_humidity:
+      name: "Ambient Humidity"
+    bme_pressure:
+      name: "Barometric Pressure"
+    tsl_illuminance:
+      name: "Illuminance"
+    wind_speed: my_wind_speed
+
+  - platform: pulse_counter
+    pin:
+      number: 25
+      mode: INPUT_PULLUP
+    id: my_wind_speed
+    name: "Anemometer Wind Speed"
+    unit_of_measurement: 'km/h'
+    update_interval: 2s
+    use_pcnt: false
+    internal_filter: 2ms
+    filters:
+      - multiply: 0.04
+      - sliding_window_moving_average:
+          window_size: 15
+          send_every: 1
+
+binary_sensor:
+  - platform: sky_thermal
+    sky_thermal_id: my_sky_thermal
+    rain_sensor: my_rain_sensor
+
+  - platform: gpio
+    pin:
+      number: 26
+      mode: INPUT_PULLUP
+      inverted: true
+    id: my_rain_sensor
+    name: "Rain Sensor"
+    device_class: moisture

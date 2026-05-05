@@ -1,0 +1,8 @@
+.esphome/
+build/
+.pio/
+.piolibdeps/
+*.db
+*.local
+secrets.yaml
+.DS_Store
