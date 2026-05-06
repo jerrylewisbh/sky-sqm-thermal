@@ -30,14 +30,6 @@ CONFIG_SCHEMA = cv.Schema({
 
 def to_code(config):
     parent = yield cg.get_variable(config[CONF_SKY_THERMAL_ID])
-    
-    cg.add_library("Adafruit MLX90640", "1.1.1")
-    cg.add_library("Adafruit BusIO", "1.14.1")
-    cg.add_library("Adafruit BME280 Library", None)
-    cg.add_library("Adafruit TSL2561", None)
-    cg.add_library("Adafruit Unified Sensor", None)
-    cg.add_library("Wire", None)
-    cg.add_library("SPI", None)
 
     if CONF_MEAN_TEMP in config:
         sens = yield sensor.new_sensor(config[CONF_MEAN_TEMP])
