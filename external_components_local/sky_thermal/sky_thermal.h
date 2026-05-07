@@ -179,7 +179,9 @@ inline void ThermalHandler::handleRequest(AsyncWebServerRequest *request) {
   char buffer[AsyncWebServerRequest::URL_BUF_SIZE];
   std::string url = request->url_to(buffer).str();
   if (url == "/json") {
-    request->send(200, "application/json", ("{\"sensors\":" + this->parent->last_data_json + "}").c_str());
+    request->send(200, "application/json",
+      ("{\"sensors\":" + this->parent->last_data_json +
+       ",\"frame\":" + this->parent->last_frame_json + "}").c_str());
     return;
   }
   if (url == "/thermal.bmp") {

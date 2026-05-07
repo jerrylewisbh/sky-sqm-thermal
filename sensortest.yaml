@@ -28,6 +28,21 @@ api:
 ota:
   - platform: esphome
 
+mqtt:
+  broker: !secret mqtt_broker
+  port: 1883
+  username: !secret mqtt_username
+  password: !secret mqtt_password
+  log_topic: omit
+  topic_prefix: skythermal
+  discovery: false
+  birth_message:
+    topic: skythermal/status
+    payload: online
+  will_message:
+    topic: skythermal/status
+    payload: offline
+
 sky_thermal:
   id: my_sky_thermal
   update_interval: 5s
@@ -73,6 +88,18 @@ sensor:
       - sliding_window_moving_average:
           window_size: 15
           send_every: 1
+
+  - platform: template
+    name: "Rain Numeric"
+    unit_of_measurement: ''
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      if (id(my_rain_sensor).state) {
+        return 1.0;
+      } else {
+        return 0.0;
+      }
 
 binary_sensor:
   - platform: sky_thermal
