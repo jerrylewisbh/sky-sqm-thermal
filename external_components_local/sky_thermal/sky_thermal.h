@@ -7,6 +7,7 @@
 #include <string>
 #include <sstream>
 #include <iomanip>
+#include <cmath>
 #include "esphome/components/web_server_base/web_server_base.h"
 
 namespace esphome {
@@ -45,6 +46,7 @@ class SkyThermal : public PollingComponent {
   sensor::Sensor *bme_pressure_sensor_{nullptr};
   sensor::Sensor *tsl_illuminance_sensor_{nullptr};
   text_sensor::TextSensor *image_sensor_{nullptr};
+  text_sensor::TextSensor *sky_condition_sensor_{nullptr};
   sensor::Sensor *wind_sensor_{nullptr};
   binary_sensor::BinarySensor *rain_sensor_{nullptr};
 
@@ -62,6 +64,7 @@ class SkyThermal : public PollingComponent {
   void set_bme_pressure_sensor(sensor::Sensor *s) { bme_pressure_sensor_ = s; }
   void set_tsl_illuminance_sensor(sensor::Sensor *s) { tsl_illuminance_sensor_ = s; }
   void set_image_sensor(text_sensor::TextSensor *s) { image_sensor_ = s; }
+  void set_sky_condition_sensor(text_sensor::TextSensor *s) { sky_condition_sensor_ = s; }
   void set_wind_sensor(sensor::Sensor *s) { wind_sensor_ = s; }
   void set_rain_sensor(binary_sensor::BinarySensor *s) { rain_sensor_ = s; }
 
@@ -171,6 +174,16 @@ class SkyThermal : public PollingComponent {
       if (bme_humidity_sensor_) bme_humidity_sensor_->publish_state(b_hum);
       if (bme_pressure_sensor_) bme_pressure_sensor_->publish_state(b_pres);
     }
+    last_ambient_ = b_temp;
+
+    last_sky_delta_median_ = NAN;
+    if (mlx_found_ && mlx_status == 0 && !std::isnan(b_temp) && !std::isnan(sum)) {
+      // Use mean delta (cheap, no allocation, no stack risk).
+      // Field name kept as sky_delta_median for HA continuity.
+      last_sky_delta_median_ = (sum / 768.0f) - b_temp;
+    }
+    last_sky_condition_ = classify_delta(last_sky_delta_median_);
+    if (sky_condition_sensor_) sky_condition_sensor_->publish_state(last_sky_condition_);
     
     float lux = NAN;
     if (tsl2591_found_) {
@@ -228,7 +241,9 @@ class SkyThermal : public PollingComponent {
       else env << "Lux: " << std::setprecision(3) << lux << std::setprecision(1) << " | ";
     }
     if (wind_active_ && !std::isnan(wind)) env << "Wind: " << wind << " km/h | ";
-    if (rs != "N/A") env << "Rain: " << rs;
+    if (rs != "N/A") env << "Rain: " << rs << " | ";
+    env << "Sky: " << last_sky_condition_;
+    if (!std::isnan(last_sky_delta_median_)) env << " (&Delta;" << last_sky_delta_median_ << "&deg;C)";
     this->last_env_str = env.str();
     
     std::stringstream json;
@@ -243,6 +258,8 @@ class SkyThermal : public PollingComponent {
     json << ",\"thermal_max\":"; if (std::isnan(max_t)) json << "null"; else json << max_t;
     json << ",\"thermal_avg\":"; if (std::isnan(sum)) json << "null"; else json << sum/768.0;
     json << ",\"thermal_center\":"; if (std::isnan(center_t)) json << "null"; else json << center_t;
+    json << ",\"sky_delta_median\":"; if (std::isnan(last_sky_delta_median_)) json << "null"; else json << last_sky_delta_median_;
+    json << ",\"sky_condition\":\"" << last_sky_condition_ << "\"";
     json << "}";
     
     this->last_data_json = json.str();
@@ -251,6 +268,33 @@ class SkyThermal : public PollingComponent {
   std::string last_env_str = "Initializing...";
   std::string last_data_json = "{}";
   std::string last_frame_json = "[]";
+  float last_ambient_ = NAN;
+  float last_sky_delta_median_ = NAN;
+  std::string last_sky_condition_ = "unknown";
+
+  // Categorical sky condition from delta = T_sky - T_ambient (degrees C).
+  // Thresholds are conventional cloud-sensor values (Boltwood-style).
+  static const char *classify_delta(float delta) {
+    if (std::isnan(delta)) return "unknown";
+    if (delta < -25) return "very_clear";
+    if (delta < -15) return "clear";
+    if (delta <  -8) return "hazy";
+    if (delta <  -3) return "light_cloud";
+    if (delta <   3) return "cloudy";
+    return "heavy_cloud";
+  }
+
+  // Same buckets, in BMP-friendly BGR (B,G,R bytes for the bitmap encoder).
+  static void delta_color_bgr(float delta, uint8_t &b, uint8_t &g, uint8_t &r) {
+    if (std::isnan(delta))      { b=128; g=128; r=128; return; }   // gray
+    if (delta < -25) { b=200; g= 60; r= 30; return; }              // deep blue
+    if (delta < -15) { b=255; g=200; r= 70; return; }              // cyan
+    if (delta <  -8) { b= 80; g=220; r= 80; return; }              // green
+    if (delta <  -3) { b= 40; g=220; r=240; return; }              // yellow
+    if (delta <   3) { b= 40; g=140; r=240; return; }              // orange
+                       b= 40; g= 40; r=220;                        // red
+  }
+
   void dump_config() override { LOG_UPDATE_INTERVAL(this); }
 };
 
@@ -271,22 +315,26 @@ inline void ThermalHandler::handleRequest(AsyncWebServerRequest *request) {
     bmp[0]='B'; bmp[1]='M'; *(uint32_t*)&bmp[2]=fs; *(uint32_t*)&bmp[10]=54;
     *(uint32_t*)&bmp[14]=40; *(int32_t*)&bmp[18]=32; *(int32_t*)&bmp[22]=24;
     bmp[26]=1; bmp[28]=24; *(uint32_t*)&bmp[34]=32*24*3;
-    float mi=100, ma=-100;
-    for(int i=0; i<768; i++) { if(this->parent->frame[i]<mi) mi=this->parent->frame[i]; if(this->parent->frame[i]>ma) ma=this->parent->frame[i]; }
-    if(ma-mi<1.0) ma=mi+1.0;
+    float amb = this->parent->last_ambient_;
     for(int y=0; y<24; y++) {
       for(int x=0; x<32; x++) {
         float v = this->parent->frame[(23-y)*32 + x];
-        float nv = (v-mi)/(ma-mi); int r = (int)(nv*255); int pos = 54+(y*32+x)*3;
-        bmp[pos] = 255-r; bmp[pos+1] = 0; bmp[pos+2] = r; 
+        float delta = std::isnan(amb) ? NAN : (v - amb);
+        uint8_t bb, gg, rr;
+        SkyThermal::delta_color_bgr(delta, bb, gg, rr);
+        int pos = 54+(y*32+x)*3;
+        bmp[pos] = bb; bmp[pos+1] = gg; bmp[pos+2] = rr;
       }
     }
     AsyncWebServerResponse *res = request->beginResponse(200, "image/bmp", bmp, fs);
+    res->addHeader("Cache-Control", "no-store, no-cache, must-revalidate");
     request->send(res); free(bmp); return;
   }
   std::string html = "<html><body style='background:#222;color:#fff;text-align:center;font-family:sans-serif;'>"
       "<h1>Weather Station</h1><div style='font-size:1.5em;margin:20px;'>" + this->parent->last_env_str + "</div>";
-  if (this->parent->mlx_found_) html += "<img src='/thermal.bmp' style='width:640px;height:480px;image-rendering:pixelated;border:2px solid #555;'><br>";
+  if (this->parent->mlx_found_) {
+    html += "<img src='/thermal.bmp?t=" + std::to_string(millis()) + "' style='width:640px;height:480px;image-rendering:pixelated;border:2px solid #555;'><br>";
+  }
   else html += "<p style='color:#f44'>Thermal Camera NOT FOUND</p>";
   html += "<script>setTimeout(()=>location.reload(), 2000);</script></body></html>";
   request->send(200, "text/html", html.c_str());

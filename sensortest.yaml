@@ -52,7 +52,10 @@ sky_thermal:
 text_sensor:
   - platform: sky_thermal
     sky_thermal_id: my_sky_thermal
-    name: "Sky Thermal Raw Data"
+    image:
+      name: "Sky Thermal Raw Data"
+    sky_condition:
+      name: "Sky Condition"
 
 sensor:
   - platform: sky_thermal
