@@ -51,6 +51,7 @@ class SkyThermal : public PollingComponent {
   ThermalHandler *handler_{nullptr};
   bool registered_{false};
   bool mlx_found_{false}, bme_found_{false}, tsl2561_found_{false}, tsl2591_found_{false}, wind_active_{false};
+  uint32_t last_retry_ms_{0};
 
   void set_mean_sensor(sensor::Sensor *s) { mean_sensor_ = s; }
   void set_min_sensor(sensor::Sensor *s) { min_sensor_ = s; }
@@ -64,30 +65,61 @@ class SkyThermal : public PollingComponent {
   void set_wind_sensor(sensor::Sensor *s) { wind_sensor_ = s; }
   void set_rain_sensor(binary_sensor::BinarySensor *s) { rain_sensor_ = s; }
 
+  void scan_i2c_bus_() {
+    ESP_LOGI(TAG, "--- I2C scan on SDA=21 SCL=22 ---");
+    int found = 0;
+    for (uint8_t addr = 0x03; addr < 0x78; addr++) {
+      Wire.beginTransmission(addr);
+      uint8_t err = Wire.endTransmission();
+      if (err == 0) {
+        const char *name = "?";
+        if (addr == 0x33) name = "MLX90640";
+        else if (addr == 0x76 || addr == 0x77) name = "BME280";
+        else if (addr == 0x29) name = "TSL2591";
+        else if (addr == 0x39 || addr == 0x49) name = "TSL2561";
+        ESP_LOGI(TAG, "  ACK 0x%02X (%s)", addr, name);
+        found++;
+      } else if (err == 4) {
+        ESP_LOGW(TAG, "  bus error at 0x%02X (err=4) — possible lockup", addr);
+      }
+    }
+    ESP_LOGI(TAG, "--- scan done, %d device(s) ---", found);
+    if (found == 0) {
+      ESP_LOGE(TAG, "NO I2C devices ACKed. Check: pull-ups on SDA/SCL (4.7k to 3.3V), wiring, power (brownout?), bus lockup (power-cycle).");
+    }
+  }
+
+  void try_init_sensors_() {
+    if (!mlx_found_) {
+      if (mlx.begin(0x33, &Wire)) {
+        ESP_LOGI(TAG, "✓ MLX90640 Found at 0x33");
+        mlx.setMode(MLX90640_CHESS); mlx.setRefreshRate(MLX90640_2_HZ);
+        mlx_found_ = true;
+      } else { ESP_LOGW(TAG, "✗ MLX90640 init failed at 0x33 (no ACK or bad ID)"); }
+    }
+    if (!bme_found_) {
+      if (bme.begin(0x76, &Wire)) { ESP_LOGI(TAG, "✓ BME280 Found at 0x76"); bme_found_ = true; }
+      else if (bme.begin(0x77, &Wire)) { ESP_LOGI(TAG, "✓ BME280 Found at 0x77"); bme_found_ = true; }
+      else { ESP_LOGW(TAG, "✗ BME280 init failed at 0x76/0x77"); }
+    }
+    if (!tsl2591_found_ && !tsl2561_found_) {
+      if (tsl2591.begin(&Wire)) {
+        ESP_LOGI(TAG, "✓ TSL2591 Found at 0x29");
+        tsl2591.setGain(TSL2591_GAIN_MED); tsl2591.setTiming(TSL2591_INTEGRATIONTIME_100MS);
+        tsl2591_found_ = true;
+      } else if (tsl2561.begin(&Wire)) {
+        ESP_LOGI(TAG, "✓ TSL2561 Found");
+        tsl2561.enableAutoRange(true); tsl2561_found_ = true;
+      } else { ESP_LOGW(TAG, "✗ Light sensor init failed (TSL2591 0x29 / TSL2561 0x39|0x49)"); }
+    }
+  }
+
   void setup() override {
-    ESP_LOGI(TAG, "I2C Setup starting on pins 21/22...");
-    Wire.begin(21, 22, 100000); 
+    ESP_LOGI(TAG, "I2C Setup starting on pins 21/22 @ 100kHz...");
+    Wire.begin(21, 22, 100000);
     delay(200);
-
-    if (mlx.begin(0x33, &Wire)) {
-      ESP_LOGI(TAG, "✓ MLX90640 Found at 0x33");
-      mlx.setMode(MLX90640_CHESS); mlx.setRefreshRate(MLX90640_2_HZ);
-      mlx_found_ = true;
-    } else { ESP_LOGW(TAG, "✗ MLX90640 NOT FOUND"); }
-
-    if (bme.begin(0x76, &Wire) || bme.begin(0x77, &Wire)) {
-      ESP_LOGI(TAG, "✓ BME280 Found");
-      bme_found_ = true;
-    } else { ESP_LOGW(TAG, "✗ BME280 NOT FOUND"); }
-
-    if (tsl2591.begin(&Wire)) {
-      ESP_LOGI(TAG, "✓ TSL2591 Found");
-      tsl2591.setGain(TSL2591_GAIN_MED); tsl2591.setTiming(TSL2591_INTEGRATIONTIME_100MS);
-      tsl2591_found_ = true;
-    } else if (tsl2561.begin(&Wire)) {
-      ESP_LOGI(TAG, "✓ TSL2561 Found");
-      tsl2561.enableAutoRange(true); tsl2561_found_ = true;
-    } else { ESP_LOGW(TAG, "✗ Light Sensor NOT FOUND"); }
+    scan_i2c_bus_();
+    try_init_sensors_();
   }
 
   void loop() override {
@@ -100,8 +132,20 @@ class SkyThermal : public PollingComponent {
   }
 
   void update() override {
+    if ((!mlx_found_ || !bme_found_ || (!tsl2591_found_ && !tsl2561_found_)) &&
+        millis() - last_retry_ms_ > 30000) {
+      last_retry_ms_ = millis();
+      ESP_LOGW(TAG, "Retrying missing I2C sensors...");
+      scan_i2c_bus_();
+      try_init_sensors_();
+    }
+
     float min_t = NAN, max_t = NAN, sum = NAN, center_t = NAN;
-    if (mlx_found_ && mlx.getFrame(frame) == 0) {
+    int mlx_status = mlx_found_ ? mlx.getFrame(frame) : -99;
+    if (mlx_found_ && mlx_status != 0) {
+      ESP_LOGW(TAG, "MLX90640 getFrame() returned %d (bus glitch?)", mlx_status);
+    }
+    if (mlx_found_ && mlx_status == 0) {
       std::string image_data = "";
       image_data.reserve(768 * 5);
       sum = 0; min_t = 100; max_t = -100;
