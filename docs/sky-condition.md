@@ -8,7 +8,7 @@ This page documents how the `sky_condition` text sensor and the `/json` `sky_del
 delta = mean(thermal_frame) − ambient_air_temperature
 ```
 
-That single value, classified into 6 buckets, gives you a Boltwood-style sky-state label. The thresholds are conventional; the physics is well established.
+That single value, classified into 6 buckets, gives you a Boltwood-style sky-state label. The thresholds are conventional.
 
 ## Why thermal IR sees clouds
 
@@ -74,15 +74,6 @@ static const char *classify_delta(float delta) {
 
 The `/thermal.bmp` endpoint applies the same six buckets *per pixel*, so a single bright cloud drifting through clear sky shows up as a yellow/orange blob on a blue background — visible without any post-processing.
 
-## Mean vs median
-
-The first implementation used `std::nth_element` for a true median, which is more robust to single-pixel outliers (a bird, plane, satellite passing through). It crashed the ESP32: a 768-float stack array (~3 kB) plus the partition recursion was enough to overflow the 8 kB main task stack alongside the live JSON/env stringstreams.
-
-We switched to mean. For cloud detection the difference is negligible:
-
-- Clouds are large patches → mean and median agree to within fractions of a degree.
-- A single hot pixel pushes the mean by ~30 °C / 768 ≈ **0.04 °C**, which is a rounding error against the 5–10 °C threshold gaps.
-- Mean costs nothing — `sum` is already computed for `thermal_avg`.
 
 ## Limitations
 
@@ -119,27 +110,10 @@ Clouds are large thermal targets with ~25 °C contrast, so 3.4°/pixel is plenty
 
 ## References
 
-The "Δ-from-ambient" cloud-detection technique is widely used in observatory operations but mostly documented in commercial product manuals and conference proceedings rather than peer-reviewed journals. The underlying physics is rigorously established.
-
 **Atmospheric IR / sky temperature physics:**
 - Berdahl, P. & Fromberg, R. (1982). *The thermal radiance of clear skies.* Solar Energy 29 (4): 299–314. — Empirical model relating sky brightness temperature to dewpoint and elevation.
 - Berdahl, P. & Martin, M. (1984). *Emissivity of clear skies.* Solar Energy 32 (5): 663–664. — Refines the model with hourly variations.
 - Idso, S. B. (1981). *A set of equations for full spectrum and 8–14 µm and 10.5–12.5 µm thermal radiation from cloudless skies.* Water Resources Research 17 (2): 295–304.
-
-**Commercial/observatory implementations using this approach:**
-- **Boltwood Cloud Sensor** (Diffraction Limited) — single-pixel thermopile (MLX90614), de facto reference for ΔT-based cloud classification thresholds.
-- **AAG CloudWatcher** (Lunatico) — same approach, similar thresholds; manual is publicly downloadable.
-
-**Astronomy / observatory papers:**
-- Pierre Auger Observatory cloud-monitoring publications (search: "Pierre Auger cloud monitor IR")
-- VERITAS / CTA atmospheric monitoring (FRAM cloud monitor)
-- Maghrabi, A. (various, *Atmospheric Research*) — thermal sky-temperature measurements from desert sites.
-
-**Search terms for further reading:**
-- `"sky temperature" cloud detection IR thermopile`
-- `Boltwood cloud sensor astronomy`
-- `MLX90614 cloud sensor observatory`
-- `infrared cloud monitor astronomical site`
 
 ## Implementation locations
 
