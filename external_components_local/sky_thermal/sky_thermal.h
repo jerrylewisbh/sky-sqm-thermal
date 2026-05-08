@@ -8,6 +8,8 @@
 #include <sstream>
 #include <iomanip>
 #include <cmath>
+#include <cstring>
+#include <algorithm>
 #include "esphome/components/web_server_base/web_server_base.h"
 
 namespace esphome {
@@ -177,12 +179,40 @@ class SkyThermal : public PollingComponent {
     last_ambient_ = b_temp;
 
     last_sky_delta_median_ = NAN;
-    if (mlx_found_ && mlx_status == 0 && !std::isnan(b_temp) && !std::isnan(sum)) {
-      // Use mean delta (cheap, no allocation, no stack risk).
-      // Field name kept as sky_delta_median for HA continuity.
-      last_sky_delta_median_ = (sum / 768.0f) - b_temp;
+    last_cloud_fraction_ = NAN;
+    last_abs_cloud_fraction_ = NAN;
+    if (mlx_found_ && mlx_status == 0 && !std::isnan(sum)) {
+      // Absolute-temperature cloud fraction (ambient-independent).
+      int abs_cloud_pixels = 0;
+      for (int i = 0; i < 768; i++) {
+        if (frame[i] > CLOUD_PIXEL_ABS_CUTOFF) abs_cloud_pixels++;
+      }
+      last_abs_cloud_fraction_ = abs_cloud_pixels / 768.0f;
+
+      if (!std::isnan(b_temp)) {
+        last_sky_delta_median_ = (sum / 768.0f) - b_temp;
+        // Delta-based cloud fraction (ambient-relative).
+        int cloud_pixels = 0;
+        for (int i = 0; i < 768; i++) {
+          if ((frame[i] - b_temp) > CLOUD_PIXEL_DELTA_CUTOFF) cloud_pixels++;
+        }
+        last_cloud_fraction_ = cloud_pixels / 768.0f;
+      }
     }
-    last_sky_condition_ = classify_delta(last_sky_delta_median_);
+    {
+      const char *delta_lbl    = classify_delta(last_sky_delta_median_);
+      const char *frac_lbl     = classify_fraction(last_cloud_fraction_);
+      const char *abs_frac_lbl = classify_fraction(last_abs_cloud_fraction_);
+      // Pessimistic of all three: the most cloudy verdict wins.
+      const char *combined = pessimistic_label(delta_lbl, frac_lbl);
+      combined = pessimistic_label(combined, abs_frac_lbl);
+      last_sky_condition_ = combined;
+      ESP_LOGD(TAG, "sky: Δ=%.1f→%s frac=%.2f→%s abs_frac=%.2f→%s -> %s",
+               last_sky_delta_median_, delta_lbl,
+               last_cloud_fraction_, frac_lbl,
+               last_abs_cloud_fraction_, abs_frac_lbl,
+               last_sky_condition_.c_str());
+    }
     if (sky_condition_sensor_) sky_condition_sensor_->publish_state(last_sky_condition_);
     
     float lux = NAN;
@@ -243,7 +273,23 @@ class SkyThermal : public PollingComponent {
     if (wind_active_ && !std::isnan(wind)) env << "Wind: " << wind << " km/h | ";
     if (rs != "N/A") env << "Rain: " << rs << " | ";
     env << "Sky: " << last_sky_condition_;
-    if (!std::isnan(last_sky_delta_median_)) env << " (&Delta;" << last_sky_delta_median_ << "&deg;C)";
+    {
+      // Show the higher of the two fractions — that's the one that drove the verdict.
+      float shown_frac = NAN;
+      if (!std::isnan(last_cloud_fraction_) && !std::isnan(last_abs_cloud_fraction_))
+        shown_frac = std::max(last_cloud_fraction_, last_abs_cloud_fraction_);
+      else if (!std::isnan(last_abs_cloud_fraction_)) shown_frac = last_abs_cloud_fraction_;
+      else if (!std::isnan(last_cloud_fraction_))     shown_frac = last_cloud_fraction_;
+
+      bool any = !std::isnan(last_sky_delta_median_) || !std::isnan(shown_frac);
+      if (any) env << " (";
+      if (!std::isnan(last_sky_delta_median_)) {
+        env << "&Delta;" << last_sky_delta_median_ << "&deg;C";
+        if (!std::isnan(shown_frac)) env << ", ";
+      }
+      if (!std::isnan(shown_frac)) env << (int)(shown_frac * 100) << "% cloud";
+      if (any) env << ")";
+    }
     this->last_env_str = env.str();
     
     std::stringstream json;
@@ -259,6 +305,8 @@ class SkyThermal : public PollingComponent {
     json << ",\"thermal_avg\":"; if (std::isnan(sum)) json << "null"; else json << sum/768.0;
     json << ",\"thermal_center\":"; if (std::isnan(center_t)) json << "null"; else json << center_t;
     json << ",\"sky_delta_median\":"; if (std::isnan(last_sky_delta_median_)) json << "null"; else json << last_sky_delta_median_;
+    json << ",\"sky_cloud_fraction\":"; if (std::isnan(last_cloud_fraction_)) json << "null"; else json << std::setprecision(3) << last_cloud_fraction_ << std::setprecision(1);
+    json << ",\"sky_abs_cloud_fraction\":"; if (std::isnan(last_abs_cloud_fraction_)) json << "null"; else json << std::setprecision(3) << last_abs_cloud_fraction_ << std::setprecision(1);
     json << ",\"sky_condition\":\"" << last_sky_condition_ << "\"";
     json << "}";
     
@@ -270,18 +318,61 @@ class SkyThermal : public PollingComponent {
   std::string last_frame_json = "[]";
   float last_ambient_ = NAN;
   float last_sky_delta_median_ = NAN;
+  float last_cloud_fraction_ = NAN;
+  float last_abs_cloud_fraction_ = NAN;
   std::string last_sky_condition_ = "unknown";
 
-  // Categorical sky condition from delta = T_sky - T_ambient (degrees C).
-  // Thresholds are conventional cloud-sensor values (Boltwood-style).
+  // Per-pixel "is this cloud?" cutoff, in degrees C below ambient.
+  // Pixels with (sky_temp - ambient) > -10 are counted as cloud.
+  static constexpr float CLOUD_PIXEL_DELTA_CUTOFF = -10.0f;
+
+  // Absolute-temperature cutoff (independent of ambient): water cloud in the
+  // troposphere is essentially never colder than -15°C; clear sky at zenith
+  // is essentially never warmer than -15°C. Pixels above this are cloud
+  // regardless of what the BME280 reports for ambient.
+  static constexpr float CLOUD_PIXEL_ABS_CUTOFF = -5.0f;
+
+  // Cloudiness rank (0 = clearest, 5 = most cloudy). Used to pick the
+  // more pessimistic of the delta- and fraction-based classifications.
+  static int cloudiness_rank(const char *label) {
+    if (!strcmp(label, "very_clear"))    return 0;
+    if (!strcmp(label, "clear"))         return 1;
+    if (!strcmp(label, "mostly_clear"))  return 2;
+    if (!strcmp(label, "partly_cloudy")) return 3;
+    if (!strcmp(label, "mostly_cloudy")) return 4;
+    if (!strcmp(label, "overcast"))      return 5;
+    return -1;  // unknown
+  }
+
+  // Mean Δ classifier (Boltwood-style). Good for uniform sky.
   static const char *classify_delta(float delta) {
     if (std::isnan(delta)) return "unknown";
     if (delta < -25) return "very_clear";
     if (delta < -15) return "clear";
-    if (delta <  -8) return "hazy";
-    if (delta <  -3) return "light_cloud";
-    if (delta <   3) return "cloudy";
-    return "heavy_cloud";
+    if (delta <  -8) return "mostly_clear";
+    if (delta <  -3) return "partly_cloudy";
+    if (delta <   3) return "mostly_cloudy";
+    return "overcast";
+  }
+
+  // Cloud-fraction classifier (METAR-style). Catches cellular/broken cloud
+  // patterns that wash out under a mean.
+  static const char *classify_fraction(float frac) {
+    if (std::isnan(frac)) return "unknown";
+    if (frac < 0.05f) return "very_clear";
+    if (frac < 0.25f) return "clear";
+    if (frac < 0.50f) return "mostly_clear";
+    if (frac < 0.75f) return "partly_cloudy";
+    if (frac < 0.95f) return "mostly_cloudy";
+    return "overcast";
+  }
+
+  // Take the more pessimistic (more cloudy) of two labels.
+  static const char *pessimistic_label(const char *a, const char *b) {
+    int ra = cloudiness_rank(a), rb = cloudiness_rank(b);
+    if (ra < 0) return b;
+    if (rb < 0) return a;
+    return (ra >= rb) ? a : b;
   }
 
   // Same buckets, in BMP-friendly BGR (B,G,R bytes for the bitmap encoder).
