@@ -105,7 +105,7 @@ class SkyThermal : public PollingComponent {
     if (!tsl2591_found_ && !tsl2561_found_) {
       if (tsl2591.begin(&Wire)) {
         ESP_LOGI(TAG, "✓ TSL2591 Found at 0x29");
-        tsl2591.setGain(TSL2591_GAIN_MED); tsl2591.setTiming(TSL2591_INTEGRATIONTIME_100MS);
+        tsl2591.setGain(TSL2591_GAIN_LOW); tsl2591.setTiming(TSL2591_INTEGRATIONTIME_100MS);
         tsl2591_found_ = true;
       } else if (tsl2561.begin(&Wire)) {
         ESP_LOGI(TAG, "✓ TSL2561 Found");
@@ -175,7 +175,39 @@ class SkyThermal : public PollingComponent {
     float lux = NAN;
     if (tsl2591_found_) {
       uint32_t lum = tsl2591.getFullLuminosity();
-      lux = tsl2591.calculateLux(lum & 0xFFFF, lum >> 16);
+      uint16_t full = lum & 0xFFFF;
+      uint16_t ir = lum >> 16;
+      tsl2591Gain_t cur_gain = tsl2591.getGain();
+
+      // Treat near-saturation (>50000) as saturation: above ~50k the formula
+      // (ch0-ch1)*(1-ch1/ch0)/cpl collapses toward 0 in IR-rich light.
+      bool saturated = (full >= 50000 || ir >= 50000);
+
+      if (saturated) {
+        if (cur_gain == TSL2591_GAIN_MAX)       tsl2591.setGain(TSL2591_GAIN_HIGH);
+        else if (cur_gain == TSL2591_GAIN_HIGH) tsl2591.setGain(TSL2591_GAIN_MED);
+        else if (cur_gain == TSL2591_GAIN_MED)  tsl2591.setGain(TSL2591_GAIN_LOW);
+        ESP_LOGD(TAG, "TSL2591 near-saturation (full=%u ir=%u), gain stepped down", full, ir);
+        // Report a high value so HA knows it's bright, not dark.
+        // 88000 lx ~ practical max at LOW gain / 100ms integration.
+        lux = 88000.0f;
+      } else if (full < 128 && cur_gain != TSL2591_GAIN_MAX) {
+        if (cur_gain == TSL2591_GAIN_LOW)       tsl2591.setGain(TSL2591_GAIN_MED);
+        else if (cur_gain == TSL2591_GAIN_MED)  tsl2591.setGain(TSL2591_GAIN_HIGH);
+        else if (cur_gain == TSL2591_GAIN_HIGH) tsl2591.setGain(TSL2591_GAIN_MAX);
+        ESP_LOGD(TAG, "TSL2591 dim (full=%u), gain stepped up", full);
+        lux = tsl2591.calculateLux(full, ir);
+        if (lux < 0 || std::isnan(lux)) lux = NAN;
+      } else {
+        lux = tsl2591.calculateLux(full, ir);
+        if (lux < 0) { ESP_LOGW(TAG, "TSL2591 calculateLux returned %.1f (saturated)", lux); lux = 88000.0f; }
+        else if (std::isnan(lux)) { ESP_LOGW(TAG, "TSL2591 calculateLux returned NaN"); lux = NAN; }
+        // Formula-collapse guard: if ch0 was high and result came out tiny, it's IR-rich saturation.
+        else if (lux < 1.0f && full > 20000) {
+          ESP_LOGW(TAG, "TSL2591 formula-collapse (full=%u ir=%u lux=%.3f) -> reporting bright", full, ir, lux);
+          lux = 88000.0f;
+        }
+      }
     } else if (tsl2561_found_) {
       sensors_event_t event; tsl2561.getEvent(&event); lux = event.light;
     }
@@ -191,7 +223,10 @@ class SkyThermal : public PollingComponent {
     if (!std::isnan(b_temp)) env << "Temp: " << b_temp << "&deg;C | ";
     if (!std::isnan(b_hum)) env << "Hum: " << b_hum << "% | ";
     if (!std::isnan(b_pres)) env << "Pres: " << b_pres << " hPa | ";
-    if (!std::isnan(lux)) env << "Lux: " << (int)lux << " | ";
+    if (!std::isnan(lux)) {
+      if (lux >= 10) env << "Lux: " << (int)lux << " | ";
+      else env << "Lux: " << std::setprecision(3) << lux << std::setprecision(1) << " | ";
+    }
     if (wind_active_ && !std::isnan(wind)) env << "Wind: " << wind << " km/h | ";
     if (rs != "N/A") env << "Rain: " << rs;
     this->last_env_str = env.str();
@@ -201,7 +236,7 @@ class SkyThermal : public PollingComponent {
     json << "{\"temp\":"; if (std::isnan(b_temp)) json << "null"; else json << b_temp;
     json << ",\"hum\":"; if (std::isnan(b_hum)) json << "null"; else json << b_hum;
     json << ",\"pres\":"; if (std::isnan(b_pres)) json << "null"; else json << b_pres;
-    json << ",\"lux\":"; if (std::isnan(lux)) json << "null"; else json << (int)lux;
+    json << ",\"lux\":"; if (std::isnan(lux)) json << "null"; else json << std::setprecision(4) << lux << std::setprecision(1);
     json << ",\"wind\":"; if (!wind_active_ || std::isnan(wind)) json << "null"; else json << wind;
     json << ",\"rain\":"; if (rs == "N/A") json << "null"; else json << (rain_sensor_->state ? "true" : "false");
     json << ",\"thermal_min\":"; if (std::isnan(min_t)) json << "null"; else json << min_t;

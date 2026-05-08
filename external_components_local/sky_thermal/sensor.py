@@ -24,7 +24,7 @@ CONFIG_SCHEMA = cv.Schema({
     cv.Optional(CONF_BME_TEMP): sensor.sensor_schema(unit_of_measurement="°C", icon="mdi:thermometer", device_class="temperature", accuracy_decimals=1),
     cv.Optional(CONF_BME_HUMIDITY): sensor.sensor_schema(unit_of_measurement="%", icon="mdi:water-percent", device_class="humidity", accuracy_decimals=1),
     cv.Optional(CONF_BME_PRESSURE): sensor.sensor_schema(unit_of_measurement="hPa", icon="mdi:gauge", device_class="pressure", accuracy_decimals=1),
-    cv.Optional(CONF_TSL_ILLUMINANCE): sensor.sensor_schema(unit_of_measurement="lx", icon="mdi:brightness-5", device_class="illuminance", accuracy_decimals=0),
+    cv.Optional(CONF_TSL_ILLUMINANCE): sensor.sensor_schema(unit_of_measurement="lx", icon="mdi:brightness-5", device_class="illuminance", accuracy_decimals=3),
     cv.Optional(CONF_WIND_SPEED): cv.use_id(sensor.Sensor),
 })
 

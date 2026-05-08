@@ -73,6 +73,7 @@ sensor:
       name: "Barometric Pressure"
     tsl_illuminance:
       name: "Illuminance"
+      accuracy_decimals: 3
     wind_speed: my_wind_speed
 
   - platform: pulse_counter
