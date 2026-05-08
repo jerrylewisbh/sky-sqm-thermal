@@ -375,15 +375,31 @@ class SkyThermal : public PollingComponent {
     return (ra >= rb) ? a : b;
   }
 
-  // Same buckets, in BMP-friendly BGR (B,G,R bytes for the bitmap encoder).
-  static void delta_color_bgr(float delta, uint8_t &b, uint8_t &g, uint8_t &r) {
-    if (std::isnan(delta))      { b=128; g=128; r=128; return; }   // gray
-    if (delta < -25) { b=200; g= 60; r= 30; return; }              // deep blue
-    if (delta < -15) { b=255; g=200; r= 70; return; }              // cyan
-    if (delta <  -8) { b= 80; g=220; r= 80; return; }              // green
-    if (delta <  -3) { b= 40; g=220; r=240; return; }              // yellow
-    if (delta <   3) { b= 40; g=140; r=240; return; }              // orange
-                       b= 40; g= 40; r=220;                        // red
+  // Per-pixel BMP color. Uses the same cloud test as the classifier:
+  // pixel is cloud if it's above EITHER the absolute cutoff OR (ambient + delta cutoff).
+  // The "above cloud cutoff" boundary is where cool colors flip to warm, so the
+  // visual matches the verdict in both daytime and cold-night regimes.
+  static void abs_temp_color_bgr(float t, float ambient, uint8_t &b, uint8_t &g, uint8_t &r) {
+    if (std::isnan(t)) { b=128; g=128; r=128; return; }   // gray
+
+    // Effective cloud-pixel cutoff = min(abs cutoff, ambient + delta cutoff):
+    // a pixel is "cloud" if it's above EITHER cutoff (less restrictive wins).
+    float cutoff = CLOUD_PIXEL_ABS_CUTOFF;
+    if (!std::isnan(ambient)) {
+      float delta_cutoff = ambient + CLOUD_PIXEL_DELTA_CUTOFF;
+      if (delta_cutoff < cutoff) cutoff = delta_cutoff;
+    }
+    float c = t - cutoff;   // c > 0 means the pixel is "cloud", c < 0 means "clear/haze"
+
+    // ----- pixel is "clear" (below cutoff): cool colors, deeper blue further below -----
+    if (c < -20) { b=200; g= 60; r= 30; return; }   // deep blue  : very clear (>20°C below cutoff)
+    if (c < -10) { b=255; g=200; r= 70; return; }   // cyan       : clear
+    if (c <  -5) { b=180; g=220; r=120; return; }   // pale green : hazy / thin
+    if (c <   0) { b= 80; g=220; r= 80; return; }   // green      : haze (just below cutoff)
+    // ----- pixel is "cloud" (above cutoff): warm colors, redder further above -----
+    if (c <   5) { b= 40; g=220; r=240; return; }   // yellow     : light cloud
+    if (c <  10) { b= 40; g=140; r=240; return; }   // orange     : cloud
+                   b= 40; g= 40; r=220;             // red        : thick / low cloud
   }
 
   void dump_config() override { LOG_UPDATE_INTERVAL(this); }
@@ -410,9 +426,8 @@ inline void ThermalHandler::handleRequest(AsyncWebServerRequest *request) {
     for(int y=0; y<24; y++) {
       for(int x=0; x<32; x++) {
         float v = this->parent->frame[(23-y)*32 + x];
-        float delta = std::isnan(amb) ? NAN : (v - amb);
         uint8_t bb, gg, rr;
-        SkyThermal::delta_color_bgr(delta, bb, gg, rr);
+        SkyThermal::abs_temp_color_bgr(v, amb, bb, gg, rr);
         int pos = 54+(y*32+x)*3;
         bmp[pos] = bb; bmp[pos+1] = gg; bmp[pos+2] = rr;
       }
