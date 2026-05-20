@@ -13,6 +13,7 @@ CONF_BME_TEMP = "bme_temp"
 CONF_BME_HUMIDITY = "bme_humidity"
 CONF_BME_PRESSURE = "bme_pressure"
 CONF_TSL_ILLUMINANCE = "tsl_illuminance"
+CONF_SKY_BRIGHTNESS_MPSAS = "sky_brightness_mpsas"
 CONF_WIND_SPEED = "wind_speed"
 
 CONFIG_SCHEMA = cv.Schema({
@@ -25,6 +26,7 @@ CONFIG_SCHEMA = cv.Schema({
     cv.Optional(CONF_BME_HUMIDITY): sensor.sensor_schema(unit_of_measurement="%", icon="mdi:water-percent", device_class="humidity", accuracy_decimals=1),
     cv.Optional(CONF_BME_PRESSURE): sensor.sensor_schema(unit_of_measurement="hPa", icon="mdi:gauge", device_class="pressure", accuracy_decimals=1),
     cv.Optional(CONF_TSL_ILLUMINANCE): sensor.sensor_schema(unit_of_measurement="lx", icon="mdi:brightness-5", device_class="illuminance", accuracy_decimals=3),
+    cv.Optional(CONF_SKY_BRIGHTNESS_MPSAS): sensor.sensor_schema(unit_of_measurement="mag/arcsec²", icon="mdi:weather-night", accuracy_decimals=2),
     cv.Optional(CONF_WIND_SPEED): cv.use_id(sensor.Sensor),
 })
 
@@ -55,6 +57,9 @@ def to_code(config):
     if CONF_TSL_ILLUMINANCE in config:
         sens = yield sensor.new_sensor(config[CONF_TSL_ILLUMINANCE])
         cg.add(parent.set_tsl_illuminance_sensor(sens))
+    if CONF_SKY_BRIGHTNESS_MPSAS in config:
+        sens = yield sensor.new_sensor(config[CONF_SKY_BRIGHTNESS_MPSAS])
+        cg.add(parent.set_sky_brightness_mpsas_sensor(sens))
     if CONF_WIND_SPEED in config:
         wind = yield cg.get_variable(config[CONF_WIND_SPEED])
         cg.add(parent.set_wind_sensor(wind))

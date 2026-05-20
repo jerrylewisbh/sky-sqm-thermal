@@ -48,6 +48,13 @@ mqtt:
 sky_thermal:
   id: my_sky_thermal
   update_interval: 5s
+  # SQM calibration constant. Formula: mpsas = K - 2.5 * log10(lux)
+  # Calibrated 2026-05-12 against all-sky camera (18.779 mag/arcsec²) and
+  # light-pollution map (18.72) at lux=0.041 — both broadband references
+  # match the TSL2591's spectral response better than B-band telescope photometry.
+  # Initial B-filter telescope attempt (K=18.64) was wrong because the
+  # supplied FITS had been background-subtracted by PixInsight.
+  sqm_calibration_k: 15.31
 
 text_sensor:
   - platform: sky_thermal
@@ -77,46 +84,7 @@ sensor:
     tsl_illuminance:
       name: "Illuminance"
       accuracy_decimals: 3
-    wind_speed: my_wind_speed
+    sky_brightness_mpsas:
+      name: "Sky Brightness"
 
-  - platform: pulse_counter
-    pin:
-      number: 25
-      mode: INPUT_PULLUP
-    id: my_wind_speed
-    name: "Anemometer Wind Speed"
-    unit_of_measurement: 'km/h'
-    update_interval: 2s
-    use_pcnt: false
-    internal_filter: 2ms
-    filters:
-      - multiply: 0.04
-      - sliding_window_moving_average:
-          window_size: 15
-          send_every: 1
-
-  - platform: template
-    name: "Rain Numeric"
-    unit_of_measurement: ''
-    accuracy_decimals: 0
-    update_interval: 5s
-    lambda: |-
-      if (id(my_rain_sensor).state) {
-        return 1.0;
-      } else {
-        return 0.0;
-      }
-
-binary_sensor:
-  - platform: sky_thermal
-    sky_thermal_id: my_sky_thermal
-    rain_sensor: my_rain_sensor
-
-  - platform: gpio
-    pin:
-      number: 26
-      mode: INPUT_PULLUP
-      inverted: true
-    id: my_rain_sensor
-    name: "Rain Sensor"
-    device_class: moisture
+# binary_sensor removed as rain sensor was disabled

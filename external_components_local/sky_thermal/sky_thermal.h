@@ -38,7 +38,13 @@ class SkyThermal : public PollingComponent {
   Adafruit_TSL2561_Unified tsl2561 = Adafruit_TSL2561_Unified(TSL2561_ADDR_FLOAT, 12345);
   Adafruit_TSL2591 tsl2591 = Adafruit_TSL2591(2591);
 
-  float frame[768];
+  static constexpr int CROP_X = 4;
+  static constexpr int CROP_Y = 4;
+  static constexpr int OUT_WIDTH = 32 - (2 * CROP_X);
+  static constexpr int OUT_HEIGHT = 24 - (2 * CROP_Y);
+  static constexpr int OUT_PIXELS = OUT_WIDTH * OUT_HEIGHT;
+
+  float frame[OUT_PIXELS];
   sensor::Sensor *mean_sensor_{nullptr};
   sensor::Sensor *min_sensor_{nullptr};
   sensor::Sensor *max_sensor_{nullptr};
@@ -47,10 +53,10 @@ class SkyThermal : public PollingComponent {
   sensor::Sensor *bme_humidity_sensor_{nullptr};
   sensor::Sensor *bme_pressure_sensor_{nullptr};
   sensor::Sensor *tsl_illuminance_sensor_{nullptr};
+  sensor::Sensor *sky_brightness_mpsas_sensor_{nullptr};
   text_sensor::TextSensor *image_sensor_{nullptr};
   text_sensor::TextSensor *sky_condition_sensor_{nullptr};
   sensor::Sensor *wind_sensor_{nullptr};
-  binary_sensor::BinarySensor *rain_sensor_{nullptr};
 
   ThermalHandler *handler_{nullptr};
   bool registered_{false};
@@ -65,10 +71,11 @@ class SkyThermal : public PollingComponent {
   void set_bme_humidity_sensor(sensor::Sensor *s) { bme_humidity_sensor_ = s; }
   void set_bme_pressure_sensor(sensor::Sensor *s) { bme_pressure_sensor_ = s; }
   void set_tsl_illuminance_sensor(sensor::Sensor *s) { tsl_illuminance_sensor_ = s; }
+  void set_sky_brightness_mpsas_sensor(sensor::Sensor *s) { sky_brightness_mpsas_sensor_ = s; }
+  void set_sqm_calibration_k(float k) { sqm_calibration_k_ = k; }
   void set_image_sensor(text_sensor::TextSensor *s) { image_sensor_ = s; }
   void set_sky_condition_sensor(text_sensor::TextSensor *s) { sky_condition_sensor_ = s; }
   void set_wind_sensor(sensor::Sensor *s) { wind_sensor_ = s; }
-  void set_rain_sensor(binary_sensor::BinarySensor *s) { rain_sensor_ = s; }
 
   void scan_i2c_bus_() {
     ESP_LOGI(TAG, "--- I2C scan on SDA=21 SCL=22 ---");
@@ -146,24 +153,30 @@ class SkyThermal : public PollingComponent {
     }
 
     float min_t = NAN, max_t = NAN, sum = NAN, center_t = NAN;
-    int mlx_status = mlx_found_ ? mlx.getFrame(frame) : -99;
+    float raw_frame[768];
+    int mlx_status = mlx_found_ ? mlx.getFrame(raw_frame) : -99;
     if (mlx_found_ && mlx_status != 0) {
       ESP_LOGW(TAG, "MLX90640 getFrame() returned %d (bus glitch?)", mlx_status);
     }
     if (mlx_found_ && mlx_status == 0) {
+      for (int y = 0; y < OUT_HEIGHT; y++) {
+        for (int x = 0; x < OUT_WIDTH; x++) {
+          frame[y * OUT_WIDTH + x] = raw_frame[(y + CROP_Y) * 32 + (x + CROP_X)];
+        }
+      }
       std::string image_data = "";
-      image_data.reserve(768 * 5);
+      image_data.reserve(OUT_PIXELS * 5);
       sum = 0; min_t = 100; max_t = -100;
-      for (int i = 0; i < 768; i++) {
+      for (int i = 0; i < OUT_PIXELS; i++) {
         sum += frame[i]; 
         if (frame[i] < min_t) min_t = frame[i];
         if (frame[i] > max_t) max_t = frame[i];
         char buf[10]; sprintf(buf, "%.1f", frame[i]);
-        image_data += buf; if (i < 767) image_data += ",";
+        image_data += buf; if (i < OUT_PIXELS - 1) image_data += ",";
       }
-      center_t = frame[400];
+      center_t = frame[(OUT_HEIGHT / 2) * OUT_WIDTH + (OUT_WIDTH / 2)];
       this->last_frame_json = "[" + image_data + "]"; 
-      if (mean_sensor_) mean_sensor_->publish_state(sum / 768.0);
+      if (mean_sensor_) mean_sensor_->publish_state(sum / (float)OUT_PIXELS);
       if (min_sensor_) min_sensor_->publish_state(min_t);
       if (max_sensor_) max_sensor_->publish_state(max_t);
       if (center_sensor_) center_sensor_->publish_state(center_t);
@@ -184,19 +197,19 @@ class SkyThermal : public PollingComponent {
     if (mlx_found_ && mlx_status == 0 && !std::isnan(sum)) {
       // Absolute-temperature cloud fraction (ambient-independent).
       int abs_cloud_pixels = 0;
-      for (int i = 0; i < 768; i++) {
+      for (int i = 0; i < OUT_PIXELS; i++) {
         if (frame[i] > CLOUD_PIXEL_ABS_CUTOFF) abs_cloud_pixels++;
       }
-      last_abs_cloud_fraction_ = abs_cloud_pixels / 768.0f;
+      last_abs_cloud_fraction_ = abs_cloud_pixels / (float)OUT_PIXELS;
 
       if (!std::isnan(b_temp)) {
-        last_sky_delta_median_ = (sum / 768.0f) - b_temp;
+        last_sky_delta_median_ = (sum / (float)OUT_PIXELS) - b_temp;
         // Delta-based cloud fraction (ambient-relative).
         int cloud_pixels = 0;
-        for (int i = 0; i < 768; i++) {
+        for (int i = 0; i < OUT_PIXELS; i++) {
           if ((frame[i] - b_temp) > CLOUD_PIXEL_DELTA_CUTOFF) cloud_pixels++;
         }
-        last_cloud_fraction_ = cloud_pixels / 768.0f;
+        last_cloud_fraction_ = cloud_pixels / (float)OUT_PIXELS;
       }
     }
     {
@@ -221,6 +234,8 @@ class SkyThermal : public PollingComponent {
       uint16_t full = lum & 0xFFFF;
       uint16_t ir = lum >> 16;
       tsl2591Gain_t cur_gain = tsl2591.getGain();
+      ESP_LOGD(TAG, "TSL2591 raw: full=%u ir=%u ratio=%.2f gain=%d",
+               full, ir, full > 0 ? (float)ir / (float)full : 0.0f, (int)cur_gain);
 
       // Treat near-saturation (>50000) as saturation: above ~50k the formula
       // (ch0-ch1)*(1-ch1/ch0)/cpl collapses toward 0 in IR-rich light.
@@ -245,21 +260,38 @@ class SkyThermal : public PollingComponent {
         lux = tsl2591.calculateLux(full, ir);
         if (lux < 0) { ESP_LOGW(TAG, "TSL2591 calculateLux returned %.1f (saturated)", lux); lux = 88000.0f; }
         else if (std::isnan(lux)) { ESP_LOGW(TAG, "TSL2591 calculateLux returned NaN"); lux = NAN; }
-        // Formula-collapse guard: if ch0 was high and result came out tiny, it's IR-rich saturation.
-        else if (lux < 1.0f && full > 20000) {
-          ESP_LOGW(TAG, "TSL2591 formula-collapse (full=%u ir=%u lux=%.3f) -> reporting bright", full, ir, lux);
+        // Formula-collapse: when full ≈ ir, the visible-only signal (full-ir) is ~0 and
+        // the formula returns ~0 even in bright light. Two regimes:
+        //   - true near-saturation (full > 50000): cap at 88000 lx
+        //   - mid-range with anomalous ir/full ratio: estimate from ch0 alone, log a warning
+        else if (lux < 1.0f && full > 50000) {
+          ESP_LOGW(TAG, "TSL2591 saturation collapse (full=%u ir=%u) -> reporting bright", full, ir);
           lux = 88000.0f;
+        }
+        else if (lux < 1.0f && full > 5000) {
+          // Linear ch0 estimate at current gain. Underestimates if light is mostly visible
+          // (since we'd normally expect ch1 < ch0); but for IR-heavy collapse cases this
+          // is much closer to truth than pinning to 88000.
+          float scale = 88000.0f / 65535.0f;  // LOW gain, 100 ms
+          if (cur_gain == TSL2591_GAIN_MED)  scale /= 25.0f;
+          else if (cur_gain == TSL2591_GAIN_HIGH) scale /= 428.0f;
+          else if (cur_gain == TSL2591_GAIN_MAX)  scale /= 9876.0f;
+          float est = full * scale;
+          ESP_LOGW(TAG, "TSL2591 formula-collapse (full=%u ir=%u, ir/full=%.2f) -> ch0-only estimate %.0f lx",
+                   full, ir, (float)ir / (float)full, est);
+          lux = est;
         }
       }
     } else if (tsl2561_found_) {
       sensors_event_t event; tsl2561.getEvent(&event); lux = event.light;
     }
     if (!std::isnan(lux) && tsl_illuminance_sensor_) tsl_illuminance_sensor_->publish_state(lux);
+
+    last_sky_mpsas_ = lux_to_mpsas(lux, sqm_calibration_k_);
+    if (sky_brightness_mpsas_sensor_) sky_brightness_mpsas_sensor_->publish_state(last_sky_mpsas_);
     
     float wind = wind_sensor_ && wind_sensor_->has_state() ? wind_sensor_->state : NAN;
     if (!std::isnan(wind) && wind > 0) wind_active_ = true;
-    
-    std::string rs = rain_sensor_ && rain_sensor_->has_state() ? (rain_sensor_->state ? "WET" : "Dry") : "N/A";
 
     std::stringstream env;
     env << std::fixed << std::setprecision(1);
@@ -271,7 +303,6 @@ class SkyThermal : public PollingComponent {
       else env << "Lux: " << std::setprecision(3) << lux << std::setprecision(1) << " | ";
     }
     if (wind_active_ && !std::isnan(wind)) env << "Wind: " << wind << " km/h | ";
-    if (rs != "N/A") env << "Rain: " << rs << " | ";
     env << "Sky: " << last_sky_condition_;
     {
       // Show the higher of the two fractions — that's the one that drove the verdict.
@@ -299,15 +330,15 @@ class SkyThermal : public PollingComponent {
     json << ",\"pres\":"; if (std::isnan(b_pres)) json << "null"; else json << b_pres;
     json << ",\"lux\":"; if (std::isnan(lux)) json << "null"; else json << std::setprecision(4) << lux << std::setprecision(1);
     json << ",\"wind\":"; if (!wind_active_ || std::isnan(wind)) json << "null"; else json << wind;
-    json << ",\"rain\":"; if (rs == "N/A") json << "null"; else json << (rain_sensor_->state ? "true" : "false");
     json << ",\"thermal_min\":"; if (std::isnan(min_t)) json << "null"; else json << min_t;
     json << ",\"thermal_max\":"; if (std::isnan(max_t)) json << "null"; else json << max_t;
-    json << ",\"thermal_avg\":"; if (std::isnan(sum)) json << "null"; else json << sum/768.0;
+    json << ",\"thermal_avg\":"; if (std::isnan(sum)) json << "null"; else json << sum/(float)OUT_PIXELS;
     json << ",\"thermal_center\":"; if (std::isnan(center_t)) json << "null"; else json << center_t;
     json << ",\"sky_delta_median\":"; if (std::isnan(last_sky_delta_median_)) json << "null"; else json << last_sky_delta_median_;
     json << ",\"sky_cloud_fraction\":"; if (std::isnan(last_cloud_fraction_)) json << "null"; else json << std::setprecision(3) << last_cloud_fraction_ << std::setprecision(1);
     json << ",\"sky_abs_cloud_fraction\":"; if (std::isnan(last_abs_cloud_fraction_)) json << "null"; else json << std::setprecision(3) << last_abs_cloud_fraction_ << std::setprecision(1);
     json << ",\"sky_condition\":\"" << last_sky_condition_ << "\"";
+    json << ",\"sky_brightness_mpsas\":"; if (std::isnan(last_sky_mpsas_)) json << "null"; else json << std::setprecision(2) << last_sky_mpsas_ << std::setprecision(1);
     json << "}";
     
     this->last_data_json = json.str();
@@ -321,6 +352,16 @@ class SkyThermal : public PollingComponent {
   float last_cloud_fraction_ = NAN;
   float last_abs_cloud_fraction_ = NAN;
   std::string last_sky_condition_ = "unknown";
+  float last_sky_mpsas_ = NAN;
+  float sqm_calibration_k_ = 19.5f;   // YAML-tunable; calibrate against reference SQM or B-filter telescope photometry
+
+  // Convert lux to magnitudes per square arcsecond (SQM scale).
+  // mpsas = K - 2.5 * log10(lux). Only meaningful at night (lux below ~1).
+  static float lux_to_mpsas(float lux, float k) {
+    if (std::isnan(lux) || lux <= 0) return NAN;
+    if (lux > 1.0f) return NAN;
+    return k - 2.5f * log10f(lux);
+  }
 
   // Per-pixel "is this cloud?" cutoff, in degrees C below ambient.
   // Pixels with (sky_temp - ambient) > -10 are counted as cloud.
@@ -416,19 +457,21 @@ inline void ThermalHandler::handleRequest(AsyncWebServerRequest *request) {
   }
   if (url == "/thermal.bmp") {
     if (!this->parent->mlx_found_) { request->send(404, "text/plain", "No Cam"); return; }
-    uint32_t fs = 54 + (32 * 24 * 3);
+    int out_w = SkyThermal::OUT_WIDTH;
+    int out_h = SkyThermal::OUT_HEIGHT;
+    uint32_t fs = 54 + (out_w * out_h * 3);
     uint8_t *bmp = (uint8_t *)malloc(fs);
     memset(bmp, 0, fs);
     bmp[0]='B'; bmp[1]='M'; *(uint32_t*)&bmp[2]=fs; *(uint32_t*)&bmp[10]=54;
-    *(uint32_t*)&bmp[14]=40; *(int32_t*)&bmp[18]=32; *(int32_t*)&bmp[22]=24;
-    bmp[26]=1; bmp[28]=24; *(uint32_t*)&bmp[34]=32*24*3;
+    *(uint32_t*)&bmp[14]=40; *(int32_t*)&bmp[18]=out_w; *(int32_t*)&bmp[22]=out_h;
+    bmp[26]=1; bmp[28]=24; *(uint32_t*)&bmp[34]=out_w*out_h*3;
     float amb = this->parent->last_ambient_;
-    for(int y=0; y<24; y++) {
-      for(int x=0; x<32; x++) {
-        float v = this->parent->frame[(23-y)*32 + x];
+    for(int y=0; y<out_h; y++) {
+      for(int x=0; x<out_w; x++) {
+        float v = this->parent->frame[(out_h-1-y)*out_w + x];
         uint8_t bb, gg, rr;
         SkyThermal::abs_temp_color_bgr(v, amb, bb, gg, rr);
-        int pos = 54+(y*32+x)*3;
+        int pos = 54+(y*out_w+x)*3;
         bmp[pos] = bb; bmp[pos+1] = gg; bmp[pos+2] = rr;
       }
     }
