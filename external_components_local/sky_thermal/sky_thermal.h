@@ -365,13 +365,13 @@ class SkyThermal : public PollingComponent {
 
   // Per-pixel "is this cloud?" cutoff, in degrees C below ambient.
   // Pixels with (sky_temp - ambient) > -10 are counted as cloud.
-  static constexpr float CLOUD_PIXEL_DELTA_CUTOFF = -10.0f;
+  static constexpr float CLOUD_PIXEL_DELTA_CUTOFF = -20.0f;
 
   // Absolute-temperature cutoff (independent of ambient): water cloud in the
   // troposphere is essentially never colder than -15°C; clear sky at zenith
   // is essentially never warmer than -15°C. Pixels above this are cloud
   // regardless of what the BME280 reports for ambient.
-  static constexpr float CLOUD_PIXEL_ABS_CUTOFF = -5.0f;
+  static constexpr float CLOUD_PIXEL_ABS_CUTOFF = -18.0f;
 
   // Cloudiness rank (0 = clearest, 5 = most cloudy). Used to pick the
   // more pessimistic of the delta- and fraction-based classifications.
@@ -388,11 +388,11 @@ class SkyThermal : public PollingComponent {
   // Mean Δ classifier (Boltwood-style). Good for uniform sky.
   static const char *classify_delta(float delta) {
     if (std::isnan(delta)) return "unknown";
-    if (delta < -25) return "very_clear";
-    if (delta < -15) return "clear";
-    if (delta <  -8) return "mostly_clear";
-    if (delta <  -3) return "partly_cloudy";
-    if (delta <   3) return "mostly_cloudy";
+    if (delta < -35) return "very_clear";
+    if (delta < -25) return "clear";
+    if (delta < -18) return "mostly_clear";
+    if (delta < -12) return "partly_cloudy";
+    if (delta <  -6) return "mostly_cloudy";
     return "overcast";
   }
 
@@ -432,15 +432,17 @@ class SkyThermal : public PollingComponent {
     }
     float c = t - cutoff;   // c > 0 means the pixel is "cloud", c < 0 means "clear/haze"
 
-    // ----- pixel is "clear" (below cutoff): cool colors, deeper blue further below -----
-    if (c < -20) { b=200; g= 60; r= 30; return; }   // deep blue  : very clear (>20°C below cutoff)
-    if (c < -10) { b=255; g=200; r= 70; return; }   // cyan       : clear
-    if (c <  -5) { b=180; g=220; r=120; return; }   // pale green : hazy / thin
-    if (c <   0) { b= 80; g=220; r= 80; return; }   // green      : haze (just below cutoff)
-    // ----- pixel is "cloud" (above cutoff): warm colors, redder further above -----
-    if (c <   5) { b= 40; g=220; r=240; return; }   // yellow     : light cloud
-    if (c <  10) { b= 40; g=140; r=240; return; }   // orange     : cloud
-                   b= 40; g= 40; r=220;             // red        : thick / low cloud
+    // ----- pixel is "clear" (below cutoff): pure blues/cyans -----
+    if (c < -25) { b=140; g= 40; r=  0; return; }   // dark navy  : extremely clear
+    if (c < -15) { b=200; g= 80; r= 20; return; }   // deep blue  : very clear
+    if (c <  -7) { b=240; g=140; r= 40; return; }   // mid blue   : clear
+    if (c <  -2) { b=255; g=200; r= 80; return; }   // light blue : light haze
+    if (c <   0) { b=255; g=240; r=140; return; }   // cyan       : heavy haze (just below cutoff)
+    // ----- pixel is "cloud" (above cutoff): yellows, oranges, reds -----
+    if (c <   4) { b= 80; g=220; r=240; return; }   // yellow     : light/thin cloud
+    if (c <  10) { b= 40; g=140; r=240; return; }   // orange     : solid cloud
+    if (c <  20) { b= 30; g= 50; r=220; return; }   // red        : thick cloud
+                   b=255; g=180; r=255;             // pink/white : extremely thick/warm (e.g. summer storms)
   }
 
   void dump_config() override { LOG_UPDATE_INTERVAL(this); }
