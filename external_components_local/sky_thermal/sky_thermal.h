@@ -73,6 +73,8 @@ class SkyThermal : public PollingComponent {
   void set_tsl_illuminance_sensor(sensor::Sensor *s) { tsl_illuminance_sensor_ = s; }
   void set_sky_brightness_mpsas_sensor(sensor::Sensor *s) { sky_brightness_mpsas_sensor_ = s; }
   void set_sqm_calibration_k(float k) { sqm_calibration_k_ = k; }
+  void set_bme_pressure_offset(float offset) { bme_pressure_offset_ = offset; }
+  void set_bme_humidity_offset(float offset) { bme_humidity_offset_ = offset; }
   void set_image_sensor(text_sensor::TextSensor *s) { image_sensor_ = s; }
   void set_sky_condition_sensor(text_sensor::TextSensor *s) { sky_condition_sensor_ = s; }
   void set_wind_sensor(sensor::Sensor *s) { wind_sensor_ = s; }
@@ -184,7 +186,18 @@ class SkyThermal : public PollingComponent {
     
     float b_temp = NAN, b_hum = NAN, b_pres = NAN;
     if (bme_found_) {
-      b_temp = bme.readTemperature(); b_hum = bme.readHumidity(); b_pres = bme.readPressure() / 100.0F;
+      b_temp = bme.readTemperature(); 
+      b_hum = bme.readHumidity(); 
+      b_pres = bme.readPressure() / 100.0F;
+      
+      if (!std::isnan(b_pres)) b_pres += bme_pressure_offset_;
+      
+      if (!std::isnan(b_hum)) {
+          b_hum += bme_humidity_offset_;
+          if (b_hum > 100.0f) b_hum = 100.0f;
+          if (b_hum < 0.0f) b_hum = 0.0f;
+      }
+
       if (bme_temp_sensor_) bme_temp_sensor_->publish_state(b_temp);
       if (bme_humidity_sensor_) bme_humidity_sensor_->publish_state(b_hum);
       if (bme_pressure_sensor_) bme_pressure_sensor_->publish_state(b_pres);
@@ -268,7 +281,7 @@ class SkyThermal : public PollingComponent {
           ESP_LOGW(TAG, "TSL2591 saturation collapse (full=%u ir=%u) -> reporting bright", full, ir);
           lux = 88000.0f;
         }
-        else if (lux < 1.0f && full > 5000) {
+        else if (lux < 1.0f && full > 40000) {
           // Linear ch0 estimate at current gain. Underestimates if light is mostly visible
           // (since we'd normally expect ch1 < ch0); but for IR-heavy collapse cases this
           // is much closer to truth than pinning to 88000.
@@ -300,7 +313,8 @@ class SkyThermal : public PollingComponent {
     if (!std::isnan(b_pres)) env << "Pres: " << b_pres << " hPa | ";
     if (!std::isnan(lux)) {
       if (lux >= 10) env << "Lux: " << (int)lux << " | ";
-      else env << "Lux: " << std::setprecision(3) << lux << std::setprecision(1) << " | ";
+      else if (lux > 0.0001f) env << "Lux: " << std::setprecision(3) << lux << std::setprecision(1) << " | ";
+      else env << "Lux: 0.000 | ";
     }
     if (wind_active_ && !std::isnan(wind)) env << "Wind: " << wind << " km/h | ";
     env << "Sky: " << last_sky_condition_;
@@ -354,13 +368,22 @@ class SkyThermal : public PollingComponent {
   std::string last_sky_condition_ = "unknown";
   float last_sky_mpsas_ = NAN;
   float sqm_calibration_k_ = 19.5f;   // YAML-tunable; calibrate against reference SQM or B-filter telescope photometry
+  float bme_pressure_offset_ = 0.0f;
+  float bme_humidity_offset_ = 0.0f;
 
   // Convert lux to magnitudes per square arcsecond (SQM scale).
-  // mpsas = K - 2.5 * log10(lux). Only meaningful at night (lux below ~1).
+  // mpsas = K - 2.5 * log10(lux). Only meaningful at night (lux below ~10).
   static float lux_to_mpsas(float lux, float k) {
-    if (std::isnan(lux) || lux <= 0) return NAN;
-    if (lux > 1.0f) return NAN;
-    return k - 2.5f * log10f(lux);
+    if (std::isnan(lux) || lux < 0) return NAN;
+    if (lux > 10.0f) return NAN;
+    
+    // Floor at 1e-6 lx to avoid log10(0). 
+    // mpsas will be capped at a practical dark limit.
+    float effective_lux = (lux < 1.0e-6f) ? 1.0e-6f : lux;
+    float mpsas = k - 2.5f * log10f(effective_lux);
+    
+    if (mpsas > 23.0f) mpsas = 23.0f; // Practical limit for a perfectly dark sky
+    return mpsas;
   }
 
   // Per-pixel "is this cloud?" cutoff, in degrees C below ambient.
