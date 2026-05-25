@@ -55,8 +55,8 @@ sky_thermal:
   # Initial B-filter telescope attempt (K=18.64) was wrong because the
   # supplied FITS had been background-subtracted by PixInsight.
   sqm_calibration_k: 15.31
-  bme_pressure_offset: 3.9   # 895.50 - 891.60 = 3.9 hPa
-  bme_humidity_offset: 6.7   # 34.0% - 27.3% = 6.7%
+  bme_pressure_offset: 0.0   # 895.50 - 891.60 = 3.9 hPa
+  bme_humidity_offset: 0.0   # 34.0% - 27.3% = 6.7%
 
 text_sensor:
   - platform: sky_thermal
