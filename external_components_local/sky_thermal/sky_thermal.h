@@ -295,6 +295,8 @@ class SkyThermal : public PollingComponent {
           lux = est;
         }
       }
+      ESP_LOGD(TAG, "TSL2591 computed lux=%.6f (full=%u ir=%u gain=%d)",
+               lux, full, ir, (int)tsl2591.getGain());
     } else if (tsl2561_found_) {
       sensors_event_t event; tsl2561.getEvent(&event); lux = event.light;
     }
